@@ -4,7 +4,7 @@
 #include <sourcemod>
 #include <sdktools>
 
-#define PLUGIN_VERSION "0.16.0"
+#define PLUGIN_VERSION "0.17.0"
 #define SIZE_STEP 10.0
 #define CACHE_MATCH_MAX_DIST 150.0
 
@@ -139,21 +139,9 @@ void ShowMainMenu(int client)
 	menu.SetTitle("Nav Prerequisite%s%s", g_bMarked ? " [MARKED]" : "", editingEnabled ? "" : " [EDITING OFF]");
 
 	menu.AddItem("setup", "Server Setup");
-
-	if (editingEnabled && !g_bMarked)
-	{
-		menu.AddItem("create", "Create");
-	}
-
-	if (editingEnabled)
-	{
-		menu.AddItem("mark", g_bMarked ? "Unmark" : "Mark Nearest");
-	}
-
-	if (g_bMarked)
-	{
-		menu.AddItem("edit", "Edit");
-	}
+	menu.AddItem("create", "Create", (!editingEnabled || g_bMarked) ? ITEMDRAW_DISABLED : ITEMDRAW_DEFAULT);
+	menu.AddItem("mark", g_bMarked ? "Unmark" : "Mark Nearest", editingEnabled ? ITEMDRAW_DEFAULT : ITEMDRAW_DISABLED);
+	menu.AddItem("edit", "Edit", g_bMarked ? ITEMDRAW_DEFAULT : ITEMDRAW_DISABLED);
 
 	menu.ExitButton = true;
 	menu.Display(client, MENU_TIME_FOREVER);
