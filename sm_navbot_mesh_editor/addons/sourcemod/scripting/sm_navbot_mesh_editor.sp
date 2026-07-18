@@ -4,7 +4,7 @@
 #include <sourcemod>
 #include <sdktools>
 
-#define PLUGIN_VERSION "0.17.0"
+#define PLUGIN_VERSION "0.18.0"
 #define SIZE_STEP 10.0
 #define CACHE_MATCH_MAX_DIST 150.0
 
@@ -17,9 +17,18 @@ enum struct PrereqCacheEntry
 	float halfY;
 	float heightZ;
 	int team;
+	int goalEntity;
 }
 
 // Confirmed via in-game sm_nav_scripting_list_conditions
+#define TC_EXISTS 1
+#define TC_ALIVE 2
+#define TC_ENABLED 3
+#define TC_LOCKED 4
+#define TC_TEAM 5
+#define TC_TOGGLE_STATE 6
+#define TC_VISIBLE 8
+
 #define TOGGLE_CONDITION_ENTITY_TOGGLE_STATE 6
 // Confirmed via extension/bot/interfaces/movement.cpp comment: "Toggle state is at top when a
 // func_door_rotating is open" -- so TS_AT_BOTTOM (1) is closed for this classname specifically.
@@ -55,8 +64,13 @@ char g_PendingEntityClassname[64];
 // Classname of the goal entity actually confirmed for the CURRENT marked prereq, via our own
 // Select/Yes flow. Empty if unknown (no NavBot getter exists to read this back from the engine).
 char g_CurrentGoalClassname[64];
+int g_CurrentGoalEntity = -1;
 int g_CurrentTeam = -2;
 float g_CurrentOrigin[3];
+
+int g_PendingToggleType = -1;
+char g_PendingToggleLabel[32];
+int g_PendingToggleEntity = -1;
 
 // Session cache: our own record of prereqs we've set up, matched by nearest-origin on Mark since
 // NavBot exposes no real ID or getters. Approximate, not authoritative -- see FindNearestCacheEntry.
@@ -119,6 +133,7 @@ void SyncActiveCacheEntry()
 	entry.origin[1] = g_CurrentOrigin[1];
 	entry.origin[2] = g_CurrentOrigin[2];
 	strcopy(entry.classname, sizeof(entry.classname), g_CurrentGoalClassname);
+	entry.goalEntity = g_CurrentGoalEntity;
 	strcopy(entry.taskInfo, sizeof(entry.taskInfo), g_PendingTaskInfo);
 	entry.halfX = g_HalfX;
 	entry.halfY = g_HalfY;
@@ -164,6 +179,7 @@ public int MenuHandler_Main(Menu menu, MenuAction action, int client, int positi
 
 			GetClientAbsOrigin(client, g_CurrentOrigin);
 			g_CurrentGoalClassname[0] = '\0';
+			g_CurrentGoalEntity = -1;
 			g_PendingTaskInfo[0] = '0'; g_PendingTaskInfo[1] = '\0';
 			g_HalfX = 32.0;
 			g_HalfY = 32.0;
@@ -178,6 +194,7 @@ public int MenuHandler_Main(Menu menu, MenuAction action, int client, int positi
 			entry.halfY = g_HalfY;
 			entry.heightZ = g_HeightZ;
 			entry.team = g_CurrentTeam;
+			entry.goalEntity = -1;
 			strcopy(entry.taskInfo, sizeof(entry.taskInfo), "0");
 			g_ActiveCacheIndex = g_PrereqCache.PushArray(entry);
 
@@ -204,6 +221,7 @@ public int MenuHandler_Main(Menu menu, MenuAction action, int client, int positi
 					g_CurrentOrigin[1] = entry.origin[1];
 					g_CurrentOrigin[2] = entry.origin[2];
 					strcopy(g_CurrentGoalClassname, sizeof(g_CurrentGoalClassname), entry.classname);
+					g_CurrentGoalEntity = entry.goalEntity;
 					strcopy(g_PendingTaskInfo, sizeof(g_PendingTaskInfo), entry.taskInfo);
 					g_HalfX = entry.halfX;
 					g_HalfY = entry.halfY;
@@ -215,6 +233,7 @@ public int MenuHandler_Main(Menu menu, MenuAction action, int client, int positi
 				{
 					g_ActiveCacheIndex = -1;
 					g_CurrentGoalClassname[0] = '\0';
+					g_CurrentGoalEntity = -1;
 					g_PendingTaskInfo[0] = '0'; g_PendingTaskInfo[1] = '\0';
 					g_HalfX = 32.0;
 					g_HalfY = 32.0;
@@ -332,6 +351,7 @@ void ShowEditMenu(int client)
 	}
 
 	menu.AddItem("delete", "Delete");
+	menu.AddItem("toggle", "Toggle Condition");
 	menu.ExitBackButton = true;
 	menu.ExitButton = false;
 	menu.Display(client, MENU_TIME_FOREVER);
@@ -371,6 +391,10 @@ public int MenuHandler_Edit(Menu menu, MenuAction action, int client, int positi
 		else if (StrEqual(info, "delete"))
 		{
 			ShowDeleteConfirm(client);
+		}
+		else if (StrEqual(info, "toggle"))
+		{
+			ShowToggleTypeMenu(client);
 		}
 	}
 	else if (action == MenuAction_Cancel)
@@ -658,6 +682,7 @@ public int MenuHandler_EntityConfirm(Menu menu, MenuAction action, int client, i
 		{
 			ServerCommand("sm_nav_prereq_set_goal_entity %d", g_PendingEntity);
 			strcopy(g_CurrentGoalClassname, sizeof(g_CurrentGoalClassname), g_PendingEntityClassname);
+			g_CurrentGoalEntity = g_PendingEntity;
 			SyncActiveCacheEntry();
 			ReplyToCommand(client, "Goal entity set to #%d.", g_PendingEntity);
 		}
@@ -668,6 +693,300 @@ public int MenuHandler_EntityConfirm(Menu menu, MenuAction action, int client, i
 
 		g_PendingEntity = -1;
 		ShowEntityTaskMenu(client, g_PendingTaskInfo, g_PendingTaskLabel);
+	}
+	else if (action == MenuAction_End)
+	{
+		delete menu;
+	}
+
+	return 0;
+}
+
+void ShowToggleTypeMenu(int client)
+{
+	Menu menu = new Menu(MenuHandler_ToggleType);
+	menu.SetTitle("Toggle Condition Type");
+	menu.AddItem("1", "Entity Exists");
+	menu.AddItem("2", "Entity Alive");
+	menu.AddItem("3", "Entity Enabled");
+	menu.AddItem("4", "Entity Locked");
+	menu.AddItem("8", "Entity Visible");
+	menu.AddItem("5", "Entity Team");
+	menu.AddItem("6", "Entity Toggle State");
+	menu.AddItem("clear", "Clear");
+	menu.ExitBackButton = true;
+	menu.ExitButton = false;
+	menu.Display(client, MENU_TIME_FOREVER);
+}
+
+public int MenuHandler_ToggleType(Menu menu, MenuAction action, int client, int position)
+{
+	if (action == MenuAction_Select)
+	{
+		char info[16];
+		char label[32];
+		menu.GetItem(position, info, sizeof(info), _, label, sizeof(label));
+
+		if (StrEqual(info, "clear"))
+		{
+			ServerCommand("sm_nav_prereq_set_toggle_condition -clear");
+			ReplyToCommand(client, "Toggle condition cleared.");
+			ShowToggleTypeMenu(client);
+			return 0;
+		}
+
+		g_PendingToggleType = StringToInt(info);
+		strcopy(g_PendingToggleLabel, sizeof(g_PendingToggleLabel), label);
+
+		if (g_CurrentGoalEntity > 0)
+		{
+			ShowToggleEntityChoiceMenu(client);
+		}
+		else
+		{
+			ShowToggleTraceMenu(client);
+		}
+	}
+	else if (action == MenuAction_Cancel)
+	{
+		if (position == MenuCancel_ExitBack) { ShowEditMenu(client); }
+	}
+	else if (action == MenuAction_End)
+	{
+		delete menu;
+	}
+
+	return 0;
+}
+
+void ShowToggleEntityChoiceMenu(int client)
+{
+	Menu menu = new Menu(MenuHandler_ToggleEntityChoice);
+	menu.SetTitle("%s -- which entity?", g_PendingToggleLabel);
+
+	char taskLabel[64];
+	Format(taskLabel, sizeof(taskLabel), "Use Task Entity (#%d %s)", g_CurrentGoalEntity, g_CurrentGoalClassname);
+	menu.AddItem("task", taskLabel);
+	menu.AddItem("pick", "Pick Different Entity");
+	menu.ExitBackButton = true;
+	menu.ExitButton = false;
+	menu.Display(client, MENU_TIME_FOREVER);
+}
+
+public int MenuHandler_ToggleEntityChoice(Menu menu, MenuAction action, int client, int position)
+{
+	if (action == MenuAction_Select)
+	{
+		char info[8];
+		menu.GetItem(position, info, sizeof(info));
+
+		if (StrEqual(info, "task"))
+		{
+			g_PendingToggleEntity = g_CurrentGoalEntity;
+			FinishToggleCondition(client);
+		}
+		else
+		{
+			ShowToggleTraceMenu(client);
+		}
+	}
+	else if (action == MenuAction_Cancel)
+	{
+		if (position == MenuCancel_ExitBack) { ShowToggleTypeMenu(client); }
+	}
+	else if (action == MenuAction_End)
+	{
+		delete menu;
+	}
+
+	return 0;
+}
+
+void ShowToggleTraceMenu(int client)
+{
+	Menu menu = new Menu(MenuHandler_ToggleTrace);
+	menu.SetTitle("%s -- aim at entity then press Select", g_PendingToggleLabel);
+	menu.AddItem("select", "Select");
+	menu.ExitBackButton = true;
+	menu.ExitButton = false;
+	menu.Display(client, MENU_TIME_FOREVER);
+}
+
+public int MenuHandler_ToggleTrace(Menu menu, MenuAction action, int client, int position)
+{
+	if (action == MenuAction_Select)
+	{
+		float eyePos[3], eyeAng[3];
+		GetClientEyePosition(client, eyePos);
+		GetClientEyeAngles(client, eyeAng);
+
+		TR_TraceRayFilter(eyePos, eyeAng, MASK_ALL, RayType_Infinite, TraceFilter_EntityOnly, client);
+
+		int hitEntity = -1;
+
+		if (TR_DidHit())
+		{
+			hitEntity = TR_GetEntityIndex();
+		}
+
+		if (hitEntity <= 0)
+		{
+			ReplyToCommand(client, "No entity found under your crosshair.");
+			ShowToggleTraceMenu(client);
+			return 0;
+		}
+
+		ShowToggleTraceConfirmMenu(client, hitEntity);
+	}
+	else if (action == MenuAction_Cancel)
+	{
+		if (position == MenuCancel_ExitBack) { ShowToggleTypeMenu(client); }
+	}
+	else if (action == MenuAction_End)
+	{
+		delete menu;
+	}
+
+	return 0;
+}
+
+void ShowToggleTraceConfirmMenu(int client, int entity)
+{
+	char classname[64];
+	GetEntityClassname(entity, classname, sizeof(classname));
+
+	char name[64];
+	GetEntPropString(entity, Prop_Data, "m_iName", name, sizeof(name));
+
+	if (name[0] == '\0') { strcopy(name, sizeof(name), "<no targetname>"); }
+
+	g_PendingToggleEntity = entity;
+
+	Menu menu = new Menu(MenuHandler_ToggleTraceConfirm);
+	menu.SetTitle("%s (%s) #%d -- use for %s?", name, classname, entity, g_PendingToggleLabel);
+	menu.AddItem("yes", "Yes");
+	menu.AddItem("no", "No");
+	menu.ExitButton = false;
+	menu.Display(client, MENU_TIME_FOREVER);
+}
+
+public int MenuHandler_ToggleTraceConfirm(Menu menu, MenuAction action, int client, int position)
+{
+	if (action == MenuAction_Select)
+	{
+		char info[8];
+		menu.GetItem(position, info, sizeof(info));
+
+		if (StrEqual(info, "yes"))
+		{
+			FinishToggleCondition(client);
+		}
+		else
+		{
+			g_PendingToggleEntity = -1;
+			ReplyToCommand(client, "Cancelled.");
+			ShowToggleTraceMenu(client);
+		}
+	}
+	else if (action == MenuAction_End)
+	{
+		delete menu;
+	}
+
+	return 0;
+}
+
+void FinishToggleCondition(int client)
+{
+	if (g_PendingToggleType == TC_TEAM)
+	{
+		ShowToggleTeamValueMenu(client);
+	}
+	else if (g_PendingToggleType == TC_TOGGLE_STATE)
+	{
+		ShowToggleStateValueMenu(client);
+	}
+	else
+	{
+		ServerCommand("sm_nav_prereq_set_toggle_condition -setentity %d -settoggletypebyid %d", g_PendingToggleEntity, g_PendingToggleType);
+		ReplyToCommand(client, "%s set on entity #%d.", g_PendingToggleLabel, g_PendingToggleEntity);
+		g_PendingToggleEntity = -1;
+		ShowToggleTypeMenu(client);
+	}
+}
+
+void ShowToggleTeamValueMenu(int client)
+{
+	char folder[32];
+	GetGameFolderName(folder, sizeof(folder));
+
+	if (!StrEqual(folder, "zps", false))
+	{
+		ReplyToCommand(client, "Team values not configured for game folder \"%s\" (only ZPS supported so far).", folder);
+		return;
+	}
+
+	Menu menu = new Menu(MenuHandler_ToggleTeamValue);
+	menu.SetTitle("Match team on entity #%d?", g_PendingToggleEntity);
+	menu.AddItem("2", "Survivors (#2)");
+	menu.AddItem("3", "Zombies (#3)");
+	menu.ExitBackButton = true;
+	menu.ExitButton = false;
+	menu.Display(client, MENU_TIME_FOREVER);
+}
+
+public int MenuHandler_ToggleTeamValue(Menu menu, MenuAction action, int client, int position)
+{
+	if (action == MenuAction_Select)
+	{
+		char info[8];
+		menu.GetItem(position, info, sizeof(info));
+
+		ServerCommand("sm_nav_prereq_set_toggle_condition -setentity %d -settoggletypebyid %d -setintdata %s", g_PendingToggleEntity, TC_TEAM, info);
+		ReplyToCommand(client, "Entity Team condition set on #%d (matches team %s).", g_PendingToggleEntity, info);
+		g_PendingToggleEntity = -1;
+		ShowToggleTypeMenu(client);
+	}
+	else if (action == MenuAction_Cancel)
+	{
+		if (position == MenuCancel_ExitBack) { ShowToggleTypeMenu(client); }
+	}
+	else if (action == MenuAction_End)
+	{
+		delete menu;
+	}
+
+	return 0;
+}
+
+void ShowToggleStateValueMenu(int client)
+{
+	Menu menu = new Menu(MenuHandler_ToggleStateValue);
+	menu.SetTitle("Match toggle state on entity #%d?", g_PendingToggleEntity);
+	menu.AddItem("0", "At Top (#0)");
+	menu.AddItem("1", "At Bottom (#1)");
+	menu.AddItem("2", "Going Up (#2)");
+	menu.AddItem("3", "Going Down (#3)");
+	menu.ExitBackButton = true;
+	menu.ExitButton = false;
+	menu.Display(client, MENU_TIME_FOREVER);
+}
+
+public int MenuHandler_ToggleStateValue(Menu menu, MenuAction action, int client, int position)
+{
+	if (action == MenuAction_Select)
+	{
+		char info[8];
+		menu.GetItem(position, info, sizeof(info));
+
+		ServerCommand("sm_nav_prereq_set_toggle_condition -setentity %d -settoggletypebyid %d -setintdata %s", g_PendingToggleEntity, TC_TOGGLE_STATE, info);
+		ReplyToCommand(client, "Entity Toggle State condition set on #%d (matches state %s).", g_PendingToggleEntity, info);
+		g_PendingToggleEntity = -1;
+		ShowToggleTypeMenu(client);
+	}
+	else if (action == MenuAction_Cancel)
+	{
+		if (position == MenuCancel_ExitBack) { ShowToggleTypeMenu(client); }
 	}
 	else if (action == MenuAction_End)
 	{
