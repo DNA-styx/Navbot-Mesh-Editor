@@ -4,7 +4,7 @@
 #include <sourcemod>
 #include <sdktools>
 
-#define PLUGIN_VERSION "0.18.0"
+#define PLUGIN_VERSION "0.19.0"
 #define SIZE_STEP 10.0
 #define CACHE_MATCH_MAX_DIST 150.0
 
@@ -71,6 +71,7 @@ float g_CurrentOrigin[3];
 int g_PendingToggleType = -1;
 char g_PendingToggleLabel[32];
 int g_PendingToggleEntity = -1;
+char g_PendingToggleValue[8];
 
 // Session cache: our own record of prereqs we've set up, matched by nearest-origin on Mark since
 // NavBot exposes no real ID or getters. Approximate, not authoritative -- see FindNearestCacheEntry.
@@ -908,11 +909,49 @@ void FinishToggleCondition(int client)
 	}
 	else
 	{
-		ServerCommand("sm_nav_prereq_set_toggle_condition -setentity %d -settoggletypebyid %d", g_PendingToggleEntity, g_PendingToggleType);
-		ReplyToCommand(client, "%s set on entity #%d.", g_PendingToggleLabel, g_PendingToggleEntity);
+		g_PendingToggleValue[0] = '\0';
+		ShowToggleInvertMenu(client);
+	}
+}
+
+void ShowToggleInvertMenu(int client)
+{
+	Menu menu = new Menu(MenuHandler_ToggleInvert);
+	menu.SetTitle("Invert this condition? (i.e. trigger when NOT true)");
+	menu.AddItem("yes", "Yes, invert");
+	menu.AddItem("no", "No, normal");
+	menu.ExitButton = false;
+	menu.Display(client, MENU_TIME_FOREVER);
+}
+
+public int MenuHandler_ToggleInvert(Menu menu, MenuAction action, int client, int position)
+{
+	if (action == MenuAction_Select)
+	{
+		char info[8];
+		menu.GetItem(position, info, sizeof(info));
+
+		bool invert = StrEqual(info, "yes");
+
+		if (g_PendingToggleValue[0] != '\0')
+		{
+			ServerCommand("sm_nav_prereq_set_toggle_condition -setentity %d -settoggletypebyid %d -setintdata %s%s", g_PendingToggleEntity, g_PendingToggleType, g_PendingToggleValue, invert ? " -toggleinverted" : "");
+		}
+		else
+		{
+			ServerCommand("sm_nav_prereq_set_toggle_condition -setentity %d -settoggletypebyid %d%s", g_PendingToggleEntity, g_PendingToggleType, invert ? " -toggleinverted" : "");
+		}
+
+		ReplyToCommand(client, "%s set on entity #%d%s.", g_PendingToggleLabel, g_PendingToggleEntity, invert ? " (inverted)" : "");
 		g_PendingToggleEntity = -1;
 		ShowToggleTypeMenu(client);
 	}
+	else if (action == MenuAction_End)
+	{
+		delete menu;
+	}
+
+	return 0;
 }
 
 void ShowToggleTeamValueMenu(int client)
@@ -942,10 +981,8 @@ public int MenuHandler_ToggleTeamValue(Menu menu, MenuAction action, int client,
 		char info[8];
 		menu.GetItem(position, info, sizeof(info));
 
-		ServerCommand("sm_nav_prereq_set_toggle_condition -setentity %d -settoggletypebyid %d -setintdata %s", g_PendingToggleEntity, TC_TEAM, info);
-		ReplyToCommand(client, "Entity Team condition set on #%d (matches team %s).", g_PendingToggleEntity, info);
-		g_PendingToggleEntity = -1;
-		ShowToggleTypeMenu(client);
+		strcopy(g_PendingToggleValue, sizeof(g_PendingToggleValue), info);
+		ShowToggleInvertMenu(client);
 	}
 	else if (action == MenuAction_Cancel)
 	{
@@ -979,10 +1016,8 @@ public int MenuHandler_ToggleStateValue(Menu menu, MenuAction action, int client
 		char info[8];
 		menu.GetItem(position, info, sizeof(info));
 
-		ServerCommand("sm_nav_prereq_set_toggle_condition -setentity %d -settoggletypebyid %d -setintdata %s", g_PendingToggleEntity, TC_TOGGLE_STATE, info);
-		ReplyToCommand(client, "Entity Toggle State condition set on #%d (matches state %s).", g_PendingToggleEntity, info);
-		g_PendingToggleEntity = -1;
-		ShowToggleTypeMenu(client);
+		strcopy(g_PendingToggleValue, sizeof(g_PendingToggleValue), info);
+		ShowToggleInvertMenu(client);
 	}
 	else if (action == MenuAction_Cancel)
 	{
