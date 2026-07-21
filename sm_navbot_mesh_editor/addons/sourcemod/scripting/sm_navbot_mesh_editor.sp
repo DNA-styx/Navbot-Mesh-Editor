@@ -35,7 +35,7 @@ enum struct PrereqCacheEntry
 #define TS_AT_BOTTOM 1
 
 static const char g_DestroyEntityClassnames[][] = { "func_breakable" };
-static const char g_UseEntityClassnames[][] = { "func_button", "func_door", "func_door_rotating", "prop_door_rotating", "prop_doorseal", "prop_dynamic", "trigger_multiple" };
+static const char g_UseEntityClassnames[][] = { "func_button", "func_door", "func_door_rotating", "prop_door_rotating", "prop_dynamic", "trigger_multiple" };
 
 public Plugin myinfo =
 {
